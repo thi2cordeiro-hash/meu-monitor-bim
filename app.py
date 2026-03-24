@@ -1,29 +1,10 @@
-"""
-BIM Radar Pro 2.0
-Versão robusta com fallback automático para ambientes SEM Streamlit.
-
-Como usar:
-1) Com Streamlit (recomendado):
-   pip install streamlit pandas requests plotly
-   streamlit run app.py
-
-2) Sem Streamlit (modo debug / servidor simples):
-   python app.py
-"""
-
+import streamlit as st
 import pandas as pd
 import requests
+import plotly.express as px
 from datetime import datetime
 
-# =========================
-# TENTATIVA DE IMPORT STREAMLIT
-# =========================
-try:
-    import streamlit as st
-    import plotly.express as px
-    STREAMLIT_AVAILABLE = True
-except ModuleNotFoundError:
-    STREAMLIT_AVAILABLE = False
+st.set_page_config(page_title="BIM Radar Pro 2.0", layout="wide")
 
 # =========================
 # CONFIG
@@ -33,6 +14,7 @@ BASE_URL = "https://pncp.gov.br/api/v1/contratacoes/publicacao"
 # =========================
 # FUNÇÃO PRINCIPAL
 # =========================
+@st.cache_data(ttl=600)
 def buscar_licitacoes(termo, paginas=3, valor_min=0):
     resultados = []
 
@@ -41,11 +23,11 @@ def buscar_licitacoes(termo, paginas=3, valor_min=0):
         "Accept": "application/json"
     }
 
-    for pagina in range(1, paginas + 1):
+    for pagina in range(0, paginas):
+
         params = {
             "pagina": pagina,
             "tamanhoPagina": 50,
-            "termo": termo,
             "ordenacao": "dataPublicacao",
             "direcao": "DESC"
         }
@@ -65,7 +47,13 @@ def buscar_licitacoes(termo, paginas=3, valor_min=0):
                 []
             )
 
+            # 🔥 FILTRO LOCAL (resolve problema da API)
             for i in items:
+                objeto = str(i.get('objeto', '')).lower()
+
+                if termo.lower() not in objeto:
+                    continue
+
                 valor = float(i.get('valorEstimado') or 0)
 
                 if valor < valor_min:
@@ -82,8 +70,7 @@ def buscar_licitacoes(termo, paginas=3, valor_min=0):
                     "Link": f"https://pncp.gov.br/app/editais/{entidade.get('cnpj')}/{i.get('anoCompra')}/{i.get('sequencialCompra')}"
                 })
 
-        except Exception as e:
-            print(f"Erro na página {pagina}: {e}")
+        except Exception:
             continue
 
     return pd.DataFrame(resultados)
@@ -113,83 +100,72 @@ def calcular_score(df, termo):
     return df.sort_values(by='Score', ascending=False)
 
 # =========================
-# MODO STREAMLIT
+# UI
 # =========================
-if STREAMLIT_AVAILABLE:
-    st.set_page_config(page_title="BIM Radar Pro 2.0", layout="wide")
+st.title("🏗️ BIM Radar Pro 2.0")
+st.markdown("Monitor inteligente de oportunidades do PNCP")
 
-    st.title("🏗️ BIM Radar Pro 2.0")
-    st.markdown("Monitor inteligente de oportunidades do PNCP")
+with st.sidebar:
+    st.header("🔍 Filtros")
 
-    with st.sidebar:
-        st.header("🔍 Filtros")
+    termo = st.text_input("Palavra-chave", "BIM")
+    paginas = st.slider("Qtd. páginas", 1, 10, 3)
+    valor_min = st.number_input("Valor mínimo (R$)", 0, 10000000, 0, step=50000)
 
-        termo = st.text_input("Palavra-chave", "BIM")
-        paginas = st.slider("Qtd. páginas", 1, 10, 3)
-        valor_min = st.number_input("Valor mínimo (R$)", 0, 10000000, 0, step=50000)
-
-        buscar = st.button("🚀 Buscar oportunidades")
-
-    if buscar:
-        with st.spinner("Buscando..."):
-            df = buscar_licitacoes(termo, paginas, valor_min)
-
-        if df.empty:
-            st.warning("Nenhum resultado encontrado.")
-        else:
-            df = calcular_score(df, termo)
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total", len(df))
-            c2.metric("Média", f"R$ {df['Valor (R$)'].mean():,.0f}")
-            c3.metric("Máximo", f"R$ {df['Valor (R$)'].max():,.0f}")
-            c4.metric("Score", df['Score'].max())
-
-            uf_count = df['UF'].value_counts().reset_index()
-            uf_count.columns = ['UF', 'Quantidade']
-
-            st.plotly_chart(px.bar(uf_count, x='UF', y='Quantidade'), use_container_width=True)
-            st.plotly_chart(px.histogram(df, x='Valor (R$)'), use_container_width=True)
-
-            csv = df.to_csv(index=False).encode('utf-8')
-
-            st.download_button("📥 Baixar CSV", csv, f"licitacoes_{datetime.now().date()}.csv")
-
-            st.dataframe(df, use_container_width=True)
+    buscar = st.button("🚀 Buscar oportunidades")
 
 # =========================
-# MODO TERMINAL (DEBUG)
+# EXECUÇÃO
 # =========================
-else:
-    print("⚠️ Streamlit não instalado. Rodando modo terminal...\n")
-
-    termo = "BIM"
-    df = buscar_licitacoes(termo, paginas=2)
+if buscar:
+    with st.spinner("Buscando oportunidades..."):
+        df = buscar_licitacoes(termo, paginas, valor_min)
 
     if df.empty:
-        print("Nenhum resultado encontrado.")
+        st.warning("Nenhum resultado encontrado.")
+        st.info("Dica: tente termos como 'obra', 'engenharia', 'projeto', 'pavimentação'")
     else:
+        st.success(f"{len(df)} resultados encontrados")
+
         df = calcular_score(df, termo)
-        print(df.head(10))
 
-# =========================
-# TESTES BÁSICOS
-# =========================
-def _test_busca():
-    df = buscar_licitacoes("BIM", paginas=1)
-    assert isinstance(df, pd.DataFrame)
+        # KPIs
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total", len(df))
+        c2.metric("Média", f"R$ {df['Valor (R$)'].mean():,.0f}")
+        c3.metric("Máximo", f"R$ {df['Valor (R$)'].max():,.0f}")
+        c4.metric("Top Score", df['Score'].max())
 
+        st.markdown("---")
 
-def _test_score():
-    df = pd.DataFrame([
-        {"Objeto": "Projeto BIM", "Valor (R$)": 1000000},
-        {"Objeto": "Outro", "Valor (R$)": 10000}
-    ])
-    df = calcular_score(df, "BIM")
-    assert "Score" in df.columns
+        # GRÁFICOS
+        col1, col2 = st.columns(2)
 
+        with col1:
+            uf_count = df['UF'].value_counts().reset_index()
+            uf_count.columns = ['UF', 'Quantidade']
+            st.plotly_chart(px.bar(uf_count, x='UF', y='Quantidade'), use_container_width=True)
 
-if __name__ == "__main__":
-    _test_busca()
-    _test_score()
-    print("\n✅ Testes básicos passaram.")
+        with col2:
+            st.plotly_chart(px.histogram(df, x='Valor (R$)'), use_container_width=True)
+
+        st.markdown("---")
+
+        # DOWNLOAD
+        csv = df.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            label="📥 Baixar CSV",
+            data=csv,
+            file_name=f"licitacoes_{datetime.now().date()}.csv",
+            mime="text/csv"
+        )
+
+        # TABELA
+        st.dataframe(
+            df,
+            column_config={
+                "Link": st.column_config.LinkColumn("🔗 Abrir")
+            },
+            use_container_width=True
+        )
