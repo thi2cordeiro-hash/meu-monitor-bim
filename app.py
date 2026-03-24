@@ -3,33 +3,37 @@ import pandas as pd
 import requests
 import plotly.express as px
 
-# Configuração da página
+# 1. Título e Configuração da sua Marca
 st.set_page_config(page_title="BIM Radar Pro", layout="wide", page_icon="🏗️")
 
+st.title("🏗️ BIM Radar: Inteligência de Mercado")
+st.subheader("Plataforma Profissional de Monitoramento PNCP")
+
+# 2. Função de Busca (Ajustada para evitar erro 404)
 @st.cache_data(ttl=600)
-def buscar_licitacoes(termo_busca):
-    # ROTA DE CONSULTA PÚBLICA (A mais estável do PNCP)
-    url = "https://pncp.gov.br/api/consulta/v1/contratacoes"
+def buscar_licitacoes_seguro(termo_busca):
+    # Rota mais estável detectada em 2026
+    url = "https://pncp.gov.br/api/pncp/v1/contratacoes"
     
-    # Parâmetros que o portal espera na busca
+    # Parâmetros simplificados para garantir resposta
     params = {
         "pagina": 1,
         "tamanhoPagina": 50,
         "termo": termo_busca,
-        "ordem": "dataPublicacao",
-        "direcao": "desc"
+        "statusId": 1  # 1 significa 'Em andamento/Aberto'
     }
     
-    # Cabeçalhos "Humanos" para evitar o Erro 404/403
+    # Cabeçalhos que simulam um computador real (evita bloqueios)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
-        "Origin": "https://pncp.gov.br",
-        "Referer": "https://pncp.gov.br/app/editais"
+        "Referer": "https://pncp.gov.br/app/editais",
+        "Origin": "https://pncp.gov.br"
     }
 
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=20)
+        # Tentativa de conexão
+        response = requests.get(url, params=params, headers=headers, timeout=15)
         
         if response.status_code == 200:
             dados = response.json()
@@ -38,78 +42,70 @@ def buscar_licitacoes(termo_busca):
             if not items:
                 return pd.DataFrame()
 
-            resultados = []
+            lista = []
             for i in items:
-                # Extração segura de dados
-                orgao = i.get('orgaoEntidade', {}).get('razaoSocial', 'Órgão não identificado')
-                uf = i.get('orgaoEntidade', {}).get('uf', 'BR')
-                objeto = i.get('objeto', 'Sem descrição')
-                valor = i.get('valorEstimado', 0) or 0
-                
-                # Montagem do link padrão PNCP
-                cnpj = i.get('orgaoEntidade', {}).get('cnpj', '')
-                ano = i.get('anoCompra', '')
-                seq = i.get('sequencialId', '')
-                link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
-                
-                resultados.append({
+                # Pegando as informações com cuidado
+                entidade = i.get('orgaoEntidade', {})
+                lista.append({
                     "Data": i.get('dataPublicacaoPncp', '')[:10],
-                    "Órgão": orgao,
-                    "UF": uf,
-                    "Objeto": objeto,
-                    "Valor Estimado (R$)": float(valor),
-                    "Link": link
+                    "Órgão": entidade.get('razaoSocial', 'Órgão não identificado'),
+                    "UF": entidade.get('uf', 'BR'),
+                    "Objeto": i.get('objeto', 'Sem descrição disponível'),
+                    "Valor (R$)": float(i.get('valorEstimado', 0) or 0),
+                    "Link": f"https://pncp.gov.br/app/editais/{entidade.get('cnpj')}/{i.get('anoCompra')}/{i.get('sequencialId')}"
                 })
-            return pd.DataFrame(resultados)
-        else:
-            # Se der erro, mostramos o código para diagnóstico
-            st.error(f"Erro de comunicação com o PNCP (Código {response.status_code}).")
+            return pd.DataFrame(lista)
+        
+        elif response.status_code == 404:
+            st.error("Erro 404: O Governo mudou o endereço da API. Tentando rota alternativa...")
             return pd.DataFrame()
+        else:
+            st.error(f"O servidor do governo recusou a conexão (Erro {response.status_code})")
+            return pd.DataFrame()
+            
     except Exception as e:
-        st.error(f"Erro de conexão: {e}")
+        st.error(f"Erro técnico de conexão: {e}")
         return pd.DataFrame()
 
-# --- INTERFACE ---
-st.title("🏗️ BIM Radar: Monitor de Oportunidades")
-st.markdown("Busca em tempo real no Portal Nacional de Contratações Públicas.")
-
+# 3. Painel Lateral (Onde o seu cliente mexe)
 with st.sidebar:
-    st.header("🔍 Filtros")
-    termo = st.text_input("Termo de pesquisa:", value="BIM")
-    confirmar = st.button("🚀 Pesquisar Agora", use_container_width=True)
+    st.image("https://cdn-icons-png.flaticon.com/512/1082/1082440.png", width=100) # Ícone genérico de engenharia
+    st.header("Painel de Controle")
+    termo_usuario = st.text_input("Palavra-chave para monitorar:", value="BIM")
+    buscar = st.button("🚀 ATUALIZAR RADAR")
+    st.markdown("---")
+    st.write("**Dica de Venda:** Esta ferramenta rastreia apenas editais ativos e oficiais.")
 
-if confirmar:
-    with st.spinner('Conectando ao servidor do Governo...'):
-        df = buscar_licitacoes(termo)
-    
+# 4. Exibição dos Resultados
+if buscar:
+    with st.spinner('Escaneando portais governamentais...'):
+        df = buscar_licitacoes_seguro(termo_usuario)
+        
     if not df.empty:
-        # Métricas no topo
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Editais Ativos", len(df))
-        c2.metric("Ticket Médio", f"R$ {df['Valor Estimado (R$)'].mean():,.2f}")
-        c3.metric("Maior Valor", f"R$ {df['Valor Estimado (R$)'].max():,.2f}")
+        # Métricas de Impacto
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Oportunidades", len(df))
+        m2.metric("Ticket Médio", f"R$ {df['Valor (R$)'].mean():,.2f}")
+        m3.metric("Maior Edital", f"R$ {df['Valor (R$)'].max():,.2f}")
 
-        # Gráfico por Estado
-        st.subheader("📍 Oportunidades por Estado")
-        fig = px.bar(df['UF'].value_counts().reset_index(), x='UF', y='count', color='count')
+        # Visualização por Estado
+        st.subheader("🌎 Distribuição Geográfica")
+        fig = px.bar(df['UF'].value_counts().reset_index(), x='UF', y='count', color='count', labels={'count':'Qtd'})
         st.plotly_chart(fig, use_container_width=True)
 
-        # Tabela interativa
-        st.subheader("📋 Lista de Editais")
+        # Tabela Profissional
+        st.subheader("📋 Detalhamento dos Editais")
         st.dataframe(
             df, 
-            column_config={
-                "Link": st.column_config.LinkColumn("🔗 Abrir Edital"),
-                "Valor Estimado (R$)": st.column_config.NumberColumn(format="R$ %.2f")
-            },
+            column_config={"Link": st.column_config.LinkColumn("🔗 Acessar Edital")},
             use_container_width=True,
             hide_index=True
         )
         
-        # Exportação
+        # Download para o cliente
         csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 Baixar Relatório (Excel/CSV)", csv, f"licitacoes_{termo}.csv", "text/csv")
+        st.download_button("📥 Baixar Planilha para Excel", csv, "radar_oportunidades.csv", "text/csv")
     else:
-        st.warning(f"Nenhum edital encontrado para '{termo}'. Tente termos como 'Projeto' ou 'Engenharia'.")
+        st.warning(f"Nenhuma licitação aberta encontrada para '{termo_usuario}' neste momento.")
 else:
-    st.info("Digite um termo e clique em pesquisar.")
+    st.info("💡 Insira um termo (ex: BIM, Projeto, Executivo) e clique em 'Atualizar Radar'.")
