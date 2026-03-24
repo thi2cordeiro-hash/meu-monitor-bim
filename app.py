@@ -2,88 +2,177 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
+from datetime import datetime
 
-st.set_page_config(page_title="BIM Radar Pro", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="BIM Radar Pro 2.0", layout="wide", page_icon="🏗️")
 
-# Interface Profissional
-st.title("🏗️ BIM Radar: Monitor de Oportunidades")
+st.title("🏗️ BIM Radar Pro 2.0")
+st.markdown("Monitor inteligente de oportunidades do PNCP")
 st.markdown("---")
 
-@st.cache_data(ttl=300)
-def buscar_licitacoes_v3(termo):
-    # ROTA DE CONSULTA (A que o site oficial usa para listar os cards)
-    url = "https://pncp.gov.br/api/consulta/v1/contratacoes"
-    
-    params = {
-        "pagina": 1,
-        "tamanhoPagina": 50,
-        "termo": termo,
-        "ordem": "dataPublicacao",
-        "direcao": "desc"
-    }
-    
+# =========================
+# CONFIG
+# =========================
+BASE_URL = "https://pncp.gov.br/api/v1/contratacoes/publicacao"
+
+# =========================
+# FUNÇÃO PRINCIPAL
+# =========================
+@st.cache_data(ttl=600)
+def buscar_licitacoes(termo, paginas=3, valor_min=0):
+    resultados = []
+
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://pncp.gov.br/app/editais",
-        "Origin": "https://pncp.gov.br"
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
     }
 
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=20)
-        
-        # LOG DE DIAGNÓSTICO (Ajuda a gente a saber o que houve)
-        if response.status_code == 200:
-            dados = response.json()
-            items = dados.get('data', []) # A nova API coloca os resultados em 'data'
-            
-            if not items:
-                return pd.DataFrame()
+    for pagina in range(1, paginas + 1):
+        params = {
+            "pagina": pagina,
+            "tamanhoPagina": 50,
+            "termo": termo,
+            "ordenacao": "dataPublicacao",
+            "direcao": "DESC"
+        }
 
-            resultados = []
+        try:
+            response = requests.get(BASE_URL, params=params, headers=headers, timeout=20)
+
+            if response.status_code != 200:
+                continue
+
+            dados = response.json()
+
+            items = (
+                dados.get("data") or
+                dados.get("items") or
+                dados.get("content") or
+                []
+            )
+
             for i in items:
-                entidade = i.get('orgaoEntidade', {})
-                # Link formatado corretamente para o novo padrão
-                link = f"https://pncp.gov.br/app/editais/{entidade.get('cnpj')}/{i.get('anoCompra')}/{i.get('sequencialId')}"
-                
+                valor = float(i.get('valorEstimado') or 0)
+
+                if valor < valor_min:
+                    continue
+
+                entidade = i.get('orgaoEntidade') or {}
+
                 resultados.append({
-                    "Data": i.get('dataPublicacaoPncp', '')[:10],
+                    "Data": str(i.get('dataPublicacao'))[:10],
                     "Órgão": entidade.get('razaoSocial', 'N/A'),
                     "UF": entidade.get('uf', 'BR'),
                     "Objeto": i.get('objeto', ''),
-                    "Valor (R$)": float(i.get('valorEstimado', 0) or 0),
-                    "Link": link
+                    "Valor (R$)": valor,
+                    "Link": f"https://pncp.gov.br/app/editais/{entidade.get('cnpj')}/{i.get('anoCompra')}/{i.get('sequencialCompra')}"
                 })
-            return pd.DataFrame(resultados)
-        else:
-            return response.status_code # Retorna o erro para exibir na tela
-    except Exception as e:
-        return str(e)
 
-# --- BARRA LATERAL ---
+        except:
+            continue
+
+    return pd.DataFrame(resultados)
+
+# =========================
+# SCORE DE OPORTUNIDADE
+# =========================
+def calcular_score(df, termo):
+    scores = []
+
+    for _, row in df.iterrows():
+        score = 0
+
+        # valor pesa mais
+        if row['Valor (R$)'] > 1_000_000:
+            score += 3
+        elif row['Valor (R$)'] > 300_000:
+            score += 2
+        else:
+            score += 1
+
+        # palavra-chave
+        if termo.lower() in row['Objeto'].lower():
+            score += 2
+
+        scores.append(score)
+
+    df['Score'] = scores
+    return df.sort_values(by='Score', ascending=False)
+
+# =========================
+# SIDEBAR
+# =========================
 with st.sidebar:
-    st.header("🔍 Filtros de Busca")
-    termo_input = st.text_input("Palavra-chave:", value="BIM")
-    buscar_btn = st.button("🚀 Pesquisar")
+    st.header("🔍 Filtros")
 
-if buscar_btn:
-    resultado = buscar_licitacoes_v3(termo_input)
-    
-    if isinstance(resultado, pd.DataFrame):
-        if not resultado.empty:
-            # Métricas
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Editais", len(resultado))
-            c2.metric("Média", f"R$ {resultado['Valor (R$)'].mean():,.2f}")
-            c3.metric("Máximo", f"R$ {resultado['Valor (R$)'].max():,.2f}")
+    termo = st.text_input("Palavra-chave", "BIM")
 
-            # Gráfico
-            st.plotly_chart(px.bar(resultado['UF'].value_counts().reset_index(), x='UF', y='count'), use_container_width=True)
+    paginas = st.slider("Qtd. páginas", 1, 10, 3)
 
-            # Tabela
-            st.dataframe(resultado, column_config={"Link": st.column_config.LinkColumn("🔗 Abrir")}, use_container_width=True)
-        else:
-            st.warning("Nenhum edital encontrado para este termo.")
+    valor_min = st.number_input("Valor mínimo (R$)", 0, 10000000, 0, step=50000)
+
+    buscar = st.button("🚀 Buscar oportunidades")
+
+# =========================
+# EXECUÇÃO
+# =========================
+if buscar:
+    with st.spinner("Buscando oportunidades..."):
+        df = buscar_licitacoes(termo, paginas, valor_min)
+
+    if df.empty:
+        st.warning("Nenhum resultado encontrado.")
+
     else:
-        st.error(f"Erro no Servidor do Governo: {resultado}")
-        st.info("Dica: O portal PNCP pode estar em manutenção. Tente novamente em 15 minutos.")
+        df = calcular_score(df, termo)
+
+        # =========================
+        # KPIs
+        # =========================
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Total", len(df))
+        c2.metric("Valor médio", f"R$ {df['Valor (R$)'].mean():,.0f}")
+        c3.metric("Maior edital", f"R$ {df['Valor (R$)'].max():,.0f}")
+        c4.metric("Top Score", df['Score'].max())
+
+        st.markdown("---")
+
+        # =========================
+        # GRÁFICOS
+        # =========================
+        col1, col2 = st.columns(2)
+
+        with col1:
+            uf_count = df['UF'].value_counts().reset_index()
+            uf_count.columns = ['UF', 'Quantidade']
+
+            st.plotly_chart(px.bar(uf_count, x='UF', y='Quantidade'), use_container_width=True)
+
+        with col2:
+            st.plotly_chart(px.histogram(df, x='Valor (R$)'), use_container_width=True)
+
+        st.markdown("---")
+
+        # =========================
+        # DOWNLOAD
+        # =========================
+        csv = df.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            label="📥 Baixar CSV",
+            data=csv,
+            file_name=f"licitacoes_{datetime.now().date()}.csv",
+            mime="text/csv"
+        )
+
+        # =========================
+        # TABELA
+        # =========================
+        st.dataframe(
+            df,
+            column_config={
+                "Link": st.column_config.LinkColumn("🔗 Abrir")
+            },
+            use_container_width=True
+        )
